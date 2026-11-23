@@ -1,0 +1,56 @@
+name: Inject IconLock into IPA
+
+on:
+    workflow_dispatch:
+        inputs:
+            ipa_url:
+                description: "RyukGram IPA — direct URL"
+                required: true
+                type: string
+            output_name:
+                description: "Output file name (blank = input name + _iconlock)"
+                default: ""
+                required: false
+                type: string
+
+jobs:
+    inject:
+        runs-on: macos-15
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: Build IconLock.dylib
+              run: |
+                  set -euo pipefail
+                  SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+                  xcrun --sdk iphoneos clang -arch arm64 -isysroot "$SDK" \
+                    -miphoneos-version-min=15.0 -fobjc-arc -dynamiclib \
+                    -framework Foundation -framework UIKit \
+                    -install_name @rpath/IconLock.dylib \
+                    -o IconLock.dylib tools/IconLock/IconLock.m
+                  codesign -f -s - IconLock.dylib
+                  file IconLock.dylib
+
+            - name: Install cyan
+              run: pip install --force-reinstall https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+            - name: Inject
+              env:
+                  IPA_URL: ${{ inputs.ipa_url }}
+                  OUT_NAME: ${{ inputs.output_name }}
+              run: |
+                  set -euo pipefail
+                  curl -fL -o in.ipa "$IPA_URL"
+                  NAME="${OUT_NAME:-$(basename "${IPA_URL%%\?*}" .ipa)_iconlock.ipa}"
+                  mkdir -p out
+                  cyan -i in.ipa -o "out/$NAME" -f IconLock.dylib
+                  unzip -l "out/$NAME" | grep -E 'IconLock|RyukGram\.dylib'
+                  unzip -p "out/$NAME" Payload/Instagram.app/Instagram > bin
+                  otool -L bin | grep -E 'IconLock|RyukGram'
+                  echo "NAME=$NAME" >> "$GITHUB_ENV"
+
+            - uses: actions/upload-artifact@v4
+              with:
+                  name: ${{ env.NAME }}
+                  path: out/${{ env.NAME }}
+                  compression-level: 0
